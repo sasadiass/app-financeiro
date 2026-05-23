@@ -375,7 +375,11 @@ export default function App() {
   const cash = parseR(month.cash);
   const totalOut = totalDebit + cash;
   const sobraAntesCredito = income - totalOut;
-  const sobraFinal = sobraAntesCredito - sumMy;
+  // Fatura do mês anterior (crédito pago no mês seguinte)
+  const prevMonth = MONTHS[(MONTHS.indexOf(activeMonth) - 1 + 12) % 12];
+  const prevMonthData = data.months[prevMonth] || initMonth();
+  const prevSumMy = prevMonthData.myCredit.reduce((a,r)=>a+parseR(r.value),0);
+  const sobraFinal = sobraAntesCredito - prevSumMy;
 
   // Third party breakdown
   const thirdByPerson = {};
@@ -585,7 +589,7 @@ export default function App() {
                   </div>
                   <SumRow label="💵 Sobra antes da fatura" value={fmt(sobraAntesCredito)} color={sobraAntesCredito>=0?C.pink:"#f43f5e"} />
                   <div style={{ marginLeft:12 }}>
-                    <SumRow label="💳 Minha parte do crédito" value={fmt(sumMy)} sub />
+                    <SumRow label={`💳 Fatura de ${prevMonth} (paga agora)`} value={fmt(prevSumMy)} sub />
                   </div>
                   <div style={{ borderTop:`1px solid ${C.border}`, marginTop:8, paddingTop:8 }}>
                     <SumRow label="✅ SOBRA FINAL DO MÊS" value={fmt(sobraFinal)} highlight />
@@ -596,7 +600,7 @@ export default function App() {
 
               <Card title="💳 Fatura do Crédito (referência)" accent={C.pink2}>
                 <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Não entra no saldo — será pago mês que vem</div>
-                <SumRow label="Minhas compras" value={fmt(sumMy)} sub />
+                <SumRow label={`Minhas compras (${activeMonth})`} value={fmt(sumMy)} sub />
                 <SumRow label="A receber de terceiros" value={fmt(sumThird)} sub />
                 <SumRow label="Total da fatura" value={fmt(totalFatura)} />
               </Card>
@@ -650,4 +654,3 @@ export default function App() {
     </div>
   );
 }
-
