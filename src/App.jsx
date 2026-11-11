@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
-
 const STORES = ["Shopee","Shein","Mercado Livre","TikTok Shop","Outro"];
 const STORE_EMOJI = { "Shopee":"🛒","Shein":"👗","Mercado Livre":"🛍️","TikTok Shop":"🎵","Outro":"🏪" };
 
@@ -20,6 +19,10 @@ const CATEGORIES = [
   { id:"shein", label:"Shein", emoji:"👗", color:"#e91e8c" },
   { id:"mercadolivre", label:"Mercado Livre", emoji:"🛍️", color:"#f5a623" },
   { id:"tiktok", label:"TikTok Shop", emoji:"🎵", color:"#6c63ff" },
+  { id:"pix", label:"Pix", emoji:"📲", color:"#14b8a6" },
+  { id:"credito", label:"Crédito", emoji:"💳", color:"#6366f1" },
+  { id:"faturas", label:"Faturas", emoji:"🧾", color:"#ef4444" },
+  { id:"contas", label:"Contas", emoji:"🏠", color:"#eab308" },
   { id:"outros", label:"Outros", emoji:"📦", color:"#94a3b8" },
 ];
 
@@ -40,11 +43,18 @@ const C = {
   gradCard: "linear-gradient(135deg,#ffe0eb,#ffd0e0)",
 };
 
+const FOOD = "#f97316";
+
 const fmt = (v) => {
   const n = parseFloat(v || 0);
   return `R$ ${n.toFixed(2).replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;
 };
 const parseR = (v) => parseFloat((v || "0").toString().replace(/[^\d,.-]/g, "").replace(",", ".")) || 0;
+
+// Divisão de gastos: "value" é o total do gasto, "splitValue" é a parte da outra pessoa.
+// A minha parte = total - parte dele.
+const theirs = (r) => Math.max(0, parseR(r.splitValue));
+const mine = (r) => Math.max(0, parseR(r.value) - theirs(r));
 
 function initMonth() {
   return {
@@ -52,7 +62,8 @@ function initMonth() {
     thirdCredit: Array(6).fill(null).map(() => ({ desc:"", value:"", who:"", category:"", installmentId:"" })),
     otherCardSpend: Array(4).fill(null).map(() => ({ desc:"", value:"", cardOwner:"", category:"", isPaid:false })),
     debit: Array(12).fill(null).map(() => ({ desc:"", value:"", category:"" })),
-    income:"", cash:"", notes:"",
+    food: Array(8).fill(null).map(() => ({ desc:"", value:"", category:"" })),
+    income:"", carryover:"", cash:"", notes:"",
   };
 }
 
@@ -61,11 +72,21 @@ function initInstallment() {
 }
 
 function loadData() {
-  try { const d = localStorage.getItem("finctrl2026v2"); if (d) return JSON.parse(d); } catch {}
+  try {
+    const d = localStorage.getItem("finctrl2026v2");
+    if (d) {
+      const parsed = JSON.parse(d);
+      // Garante que meses salvos antes ganhem os novos campos (alimentação e sobra)
+      const months = {};
+      MONTHS.forEach(m => { months[m] = { ...initMonth(), ...((parsed.months || {})[m] || {}) }; });
+      return { ...parsed, months, installments: parsed.installments || [] };
+    }
+  } catch {}
   const months = {};
   MONTHS.forEach(m => { months[m] = initMonth(); });
   return { months, installments:[] };
 }
+
 function saveData(d) { try { localStorage.setItem("finctrl2026v2", JSON.stringify(d)); } catch {} }
 
 const lbl = { display:"block", color:C.mid, fontSize:11, textTransform:"uppercase", letterSpacing:1, marginBottom:5, marginTop:12 };
@@ -83,19 +104,56 @@ function CatSelect({ value, onChange, style }) {
 }
 
 // ── Row ────────────────────────────────────────────────────────────────────
-function Row({ item, idx, onChange, showWho, showOwner }) {
+function Row({ item, idx, onChange, showWho, showOwner, canSplit }) {
+  const [open, setOpen] = useState(false);
+  const hasSplit = theirs(item) > 0;
+  const baseCols = showWho ? "1fr 100px 110px 100px" : showOwner ? "1fr 110px 110px 100px" : "1fr 110px 100px";
+  const cols = canSplit ? `${baseCols} 30px` : baseCols;
+  const total = parseR(item.value);
+
   return (
-    <div style={{ display:"grid", gridTemplateColumns: showWho ? "1fr 100px 110px 100px" : showOwner ? "1fr 110px 110px 100px" : "1fr 110px 100px", gap:5, marginBottom:5 }}>
-      <input value={item.desc||""} onChange={e=>onChange(idx,"desc",e.target.value)}
-        placeholder={`Item ${idx+1}`} style={{ ...inp,fontSize:12,padding:"7px 9px" }} />
-      {showWho && <input value={item.who||""} onChange={e=>onChange(idx,"who",e.target.value)}
-        placeholder="Quem paga" style={{ ...inp,fontSize:12,padding:"7px 9px" }} />}
-      {showOwner && <input value={item.cardOwner||""} onChange={e=>onChange(idx,"cardOwner",e.target.value)}
-        placeholder="Dono cartão" style={{ ...inp,fontSize:12,padding:"7px 9px" }} />}
-      <CatSelect value={item.category||""} onChange={v=>onChange(idx,"category",v)} />
-      <input value={item.value||""} onChange={e=>onChange(idx,"value",e.target.value)}
-        placeholder="R$ 0,00" type="number"
-        style={{ ...inp,fontSize:12,padding:"7px 9px",textAlign:"right",color:C.pink }} />
+    <div style={{ marginBottom:5 }}>
+      <div style={{ display:"grid", gridTemplateColumns: cols, gap:5 }}>
+        <input value={item.desc||""} onChange={e=>onChange(idx,"desc",e.target.value)}
+          placeholder={`Item ${idx+1}`} style={{ ...inp,fontSize:12,padding:"7px 9px" }} />
+        {showWho && <input value={item.who||""} onChange={e=>onChange(idx,"who",e.target.value)}
+          placeholder="Quem paga" style={{ ...inp,fontSize:12,padding:"7px 9px" }} />}
+        {showOwner && <input value={item.cardOwner||""} onChange={e=>onChange(idx,"cardOwner",e.target.value)}
+          placeholder="Dono cartão" style={{ ...inp,fontSize:12,padding:"7px 9px" }} />}
+        <CatSelect value={item.category||""} onChange={v=>onChange(idx,"category",v)} />
+        <input value={item.value||""} onChange={e=>onChange(idx,"value",e.target.value)}
+          placeholder="R$ 0,00" type="number"
+          style={{ ...inp,fontSize:12,padding:"7px 9px",textAlign:"right",color:C.pink }} />
+        {canSplit && (
+          <button onClick={()=>setOpen(o=>!o)} title="Dividir com alguém"
+            style={{ padding:0, borderRadius:8, border:`1px ${hasSplit?"solid":"dashed"} ${hasSplit?C.pink:C.border}`, background:hasSplit?C.highlight:"none", color:hasSplit?C.pink:C.light, cursor:"pointer", fontSize:14, fontFamily:"inherit" }}>÷</button>
+        )}
+      </div>
+
+      {canSplit && open && (
+        <div style={{ background:"#fff8fa", border:`1px dashed ${C.border}`, borderRadius:10, padding:"8px 10px", marginTop:5, display:"grid", gridTemplateColumns:"1fr 100px 34px", gap:5, alignItems:"center" }}>
+          <input value={item.splitWho||""} onChange={e=>onChange(idx,"splitWho",e.target.value)}
+            placeholder="Dividido com…" style={{ ...inp,fontSize:12,padding:"7px 9px" }} />
+          <input value={item.splitValue||""} onChange={e=>onChange(idx,"splitValue",e.target.value)}
+            placeholder="Parte dele" type="number"
+            style={{ ...inp,fontSize:12,padding:"7px 9px",textAlign:"right",color:C.pink2 }} />
+          <button onClick={()=>onChange(idx,"splitValue", total>0 ? (total/2).toFixed(2) : "")} title="Dividir ao meio"
+            style={{ padding:"7px 0", borderRadius:8, border:`1px solid ${C.border}`, background:"none", color:C.mid, cursor:"pointer", fontSize:12, fontFamily:"inherit" }}>½</button>
+          <div style={{ gridColumn:"1 / -1", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, color:C.mid }}>
+            <span>Minha parte: <b style={{ color:C.pink }}>{fmt(mine(item))}</b> · o resto vai para Terceiros</span>
+            {hasSplit && (
+              <button onClick={()=>{ onChange(idx,"splitWho",""); onChange(idx,"splitValue",""); setOpen(false); }}
+                style={{ background:"none", border:"none", color:C.light, cursor:"pointer", fontSize:11, fontFamily:"inherit", textDecoration:"underline" }}>remover</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {canSplit && !open && hasSplit && (
+        <div onClick={()=>setOpen(true)} style={{ cursor:"pointer", color:C.mid, fontSize:11, margin:"3px 0 0 4px" }}>
+          ↳ 👤 {item.splitWho || "Sem nome"} paga {fmt(theirs(item))} · minha parte {fmt(mine(item))}
+        </div>
+      )}
     </div>
   );
 }
@@ -130,7 +188,6 @@ function SumRow({ label, value, highlight, sub, color }) {
 function InstallmentModal({ onConfirm, onClose, editData }) {
   const [form, setForm] = useState(editData || initInstallment());
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
-
   const monthIdx = MONTHS.indexOf(form.startMonth);
   const total = parseR(form.totalValue);
   const n = parseInt(form.totalInstallments)||1;
@@ -232,14 +289,15 @@ function InstallmentModal({ onConfirm, onClose, editData }) {
 // ── Category Chart ─────────────────────────────────────────────────────────
 function CategoryChart({ month }) {
   const totals = {};
-  const addToTotals = (items) => items.forEach(r => {
+  const addToTotals = (items) => (items||[]).forEach(r => {
     if (r.value && r.category) {
-      totals[r.category] = (totals[r.category]||0) + parseR(r.value);
+      totals[r.category] = (totals[r.category]||0) + mine(r);
     }
   });
   addToTotals(month.myCredit);
   addToTotals(month.thirdCredit);
   addToTotals(month.debit);
+  addToTotals(month.food);
   if (month.cash && parseR(month.cash) > 0) totals["outros"] = (totals["outros"]||0) + parseR(month.cash);
 
   const data = Object.entries(totals).map(([id, value]) => {
@@ -289,11 +347,12 @@ export default function App() {
 
   useEffect(() => { saveData(data); }, [data]);
 
-  const month = data.months[activeMonth] || initMonth();
+  const month = { ...initMonth(), ...(data.months[activeMonth] || {}) };
 
   function updateMonth(updater) {
     setData(prev => {
-      const next = { ...prev, months: { ...prev.months, [activeMonth]: JSON.parse(JSON.stringify(prev.months[activeMonth] || initMonth())) } };
+      const base = { ...initMonth(), ...(prev.months[activeMonth] || {}) };
+      const next = { ...prev, months: { ...prev.months, [activeMonth]: JSON.parse(JSON.stringify(base)) } };
       updater(next.months[activeMonth]);
       return next;
     });
@@ -365,38 +424,57 @@ export default function App() {
     });
   }
 
-  // Totals
-  const sumMy = month.myCredit.reduce((a,r)=>a+parseR(r.value),0);
+  // Totals (sempre só a MINHA parte quando o gasto foi dividido)
+  const sumMy = month.myCredit.reduce((a,r)=>a+mine(r),0);
   const sumThird = month.thirdCredit.reduce((a,r)=>a+parseR(r.value),0);
-  const totalFatura = sumMy + sumThird;
-  const totalDebit = month.debit.reduce((a,r)=>a+parseR(r.value),0);
+  const sumSplitCredit = month.myCredit.reduce((a,r)=>a+theirs(r),0);
+  const sumThirdCard = sumThird + sumSplitCredit;
+  const totalFatura = sumMy + sumThirdCard;
+  const totalDebit = month.debit.reduce((a,r)=>a+mine(r),0);
+  const totalFood = month.food.reduce((a,r)=>a+mine(r),0);
+  const splitDebit = month.debit.reduce((a,r)=>a+theirs(r),0);
+  const splitFood = month.food.reduce((a,r)=>a+theirs(r),0);
   const totalOtherCard = (month.otherCardSpend||[]).reduce((a,r)=>a+parseR(r.value),0);
   const income = parseR(month.income);
+  const carryover = parseR(month.carryover);
   const cash = parseR(month.cash);
   const totalOut = totalDebit + cash;
-  const sobraAntesCredito = income - totalOut;
+  const sobraAntesCredito = income + carryover - totalOut;
+
   // Fatura do mês anterior (crédito pago no mês seguinte)
   const prevMonth = MONTHS[(MONTHS.indexOf(activeMonth) - 1 + 12) % 12];
-  const prevMonthData = data.months[prevMonth] || initMonth();
-  const prevSumMy = prevMonthData.myCredit.reduce((a,r)=>a+parseR(r.value),0);
+  const prevMonthData = { ...initMonth(), ...(data.months[prevMonth] || {}) };
+  const prevSumMy = prevMonthData.myCredit.reduce((a,r)=>a+mine(r),0);
   const sobraFinal = sobraAntesCredito - prevSumMy;
 
-  // Third party breakdown
+  // Sobra final do mês anterior (para preencher "Sobrou do mês passado")
+  const prevPrevMonth = MONTHS[(MONTHS.indexOf(prevMonth) - 1 + 12) % 12];
+  const prevPrevData = { ...initMonth(), ...(data.months[prevPrevMonth] || {}) };
+  const prevSobraFinal =
+    parseR(prevMonthData.income) + parseR(prevMonthData.carryover)
+    - (prevMonthData.debit.reduce((a,r)=>a+mine(r),0) + parseR(prevMonthData.cash))
+    - prevPrevData.myCredit.reduce((a,r)=>a+mine(r),0);
+
+  // Third party breakdown (terceiros + partes divididas)
   const thirdByPerson = {};
-  month.thirdCredit.forEach(r => {
-    if (r.value && r.who) {
-      thirdByPerson[r.who] = (thirdByPerson[r.who]||0) + parseR(r.value);
+  const addThird = (who, val) => {
+    if (val > 0) {
+      const k = (who||"").trim() || "Sem nome";
+      thirdByPerson[k] = (thirdByPerson[k]||0) + val;
     }
-  });
+  };
+  month.thirdCredit.forEach(r => { if (r.value && r.who) addThird(r.who, parseR(r.value)); });
+  [...month.myCredit, ...month.debit, ...month.food].forEach(r => addThird(r.splitWho, theirs(r)));
+  const receivable = sumThird + sumSplitCredit + splitDebit + splitFood;
 
   const tabs = [
     { id:"credit", label:"💳 Crédito" },
-    { id:"debit",  label:"💸 Débito" },
+    { id:"debit", label:"💸 Débito" },
     { id:"othercard", label:"🔄 Outro Cartão" },
     { id:"installments", label:"📦 Parcelas" },
     { id:"summary", label:"📊 Resumo" },
-    { id:"chart",   label:"📈 Gráfico" },
-    { id:"notes",   label:"📝 Notas" },
+    { id:"chart", label:"📈 Gráfico" },
+    { id:"notes", label:"📝 Notas" },
   ];
 
   return (
@@ -420,8 +498,8 @@ export default function App() {
             {MONTHS.map(m => {
               const isActive = m === activeMonth;
               const isNow = MONTHS.indexOf(m) === new Date().getMonth();
-              const md = data.months[m] || initMonth();
-              const hasData = md.myCredit.some(r=>r.value) || md.debit.some(r=>r.value) || md.income;
+              const md = { ...initMonth(), ...(data.months[m] || {}) };
+              const hasData = md.myCredit.some(r=>r.value) || md.debit.some(r=>r.value) || md.food.some(r=>r.value) || md.income;
               return (
                 <button key={m} onClick={()=>setActiveMonth(m)}
                   style={{ flexShrink:0, padding:"5px 11px", borderRadius:20, border:isActive?"none":"1px solid rgba(255,255,255,0.5)", background:isActive?"#fff":"rgba(255,255,255,0.25)", color:isActive?C.pink:isNow?"#fff":"rgba(255,255,255,0.8)", fontSize:12, cursor:"pointer", fontWeight:isActive||isNow?700:400, position:"relative", fontFamily:"inherit" }}>
@@ -451,28 +529,40 @@ export default function App() {
           {tab==="credit" && (
             <>
               <Card title="📌 Minhas Compras no Crédito" accent={C.pink} total={sumMy}>
-                <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Não impacta o saldo do mês — pago no mês seguinte</div>
-                {month.myCredit.map((r,i) => <Row key={i} item={r} idx={i} onChange={(idx,f,v)=>updateRow("myCredit",idx,f,v)} />)}
+                <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Não impacta o saldo do mês — pago no mês seguinte. Use o ÷ para dividir com alguém.</div>
+                {month.myCredit.map((r,i) => <Row key={i} item={r} idx={i} canSplit onChange={(idx,f,v)=>updateRow("myCredit",idx,f,v)} />)}
                 <button onClick={()=>addRow("myCredit",{desc:"",value:"",category:"",installmentId:""})} style={{ width:"100%",padding:"7px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.light,cursor:"pointer",fontSize:12,marginTop:4,fontFamily:"inherit" }}>+ Adicionar linha</button>
               </Card>
-              <Card title="👥 Terceiros (vão me reembolsar)" accent={C.pink2} total={sumThird}>
+
+              <Card title="👥 Terceiros (vão me reembolsar)" accent={C.pink2} total={sumThirdCard}>
                 {month.thirdCredit.map((r,i) => <Row key={i} item={r} idx={i} onChange={(idx,f,v)=>updateRow("thirdCredit",idx,f,v)} showWho />)}
                 <button onClick={()=>addRow("thirdCredit",{desc:"",value:"",who:"",category:"",installmentId:""})} style={{ width:"100%",padding:"7px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.light,cursor:"pointer",fontSize:12,marginTop:4,fontFamily:"inherit" }}>+ Adicionar linha</button>
+
+                {sumSplitCredit > 0 && (
+                  <div style={{ marginTop:12 }}>
+                    <div style={{ color:C.light, fontSize:11, marginBottom:6 }}>Partes de gastos divididos nas minhas compras</div>
+                    {month.myCredit.map((r,i) => theirs(r) > 0 && (
+                      <SumRow key={i} label={`↳ ${r.desc || `Item ${i+1}`} · ${r.splitWho || "Sem nome"}`} value={fmt(theirs(r))} sub />
+                    ))}
+                  </div>
+                )}
               </Card>
+
               {Object.keys(thirdByPerson).length > 0 && (
                 <Card title="💰 Quanto Cada Um Me Deve" accent={C.pink2}>
                   {Object.entries(thirdByPerson).map(([who,val])=>(
                     <SumRow key={who} label={`👤 ${who}`} value={fmt(val)} sub />
                   ))}
-                  <SumRow label="Total a receber" value={fmt(sumThird)} />
+                  <SumRow label="Total a receber" value={fmt(receivable)} />
                 </Card>
               )}
+
               <div style={{ background:C.gradCard, border:`1px solid ${C.border}`, borderRadius:16, padding:"16px", textAlign:"center" }}>
                 <div style={{ color:C.mid, fontSize:11, textTransform:"uppercase", letterSpacing:1, marginBottom:6 }}>🔢 Total da Fatura</div>
                 <div style={{ color:C.pink, fontSize:28, fontFamily:"'Playfair Display',serif", fontWeight:700 }}>{fmt(totalFatura)}</div>
                 <div style={{ display:"flex", justifyContent:"center", gap:20, marginTop:8 }}>
                   <span style={{ color:C.pink, fontSize:12 }}>Minhas: {fmt(sumMy)}</span>
-                  <span style={{ color:C.pink2, fontSize:12 }}>Terceiros: {fmt(sumThird)}</span>
+                  <span style={{ color:C.pink2, fontSize:12 }}>Terceiros: {fmt(sumThirdCard)}</span>
                 </div>
               </div>
             </>
@@ -480,11 +570,30 @@ export default function App() {
 
           {/* ── DÉBITO ── */}
           {tab==="debit" && (
-            <Card title="💸 Gastos no Débito" accent={C.pink} total={totalDebit}>
-              <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Esses gastos impactam o saldo do mês atual</div>
-              {month.debit.map((r,i) => <Row key={i} item={r} idx={i} onChange={(idx,f,v)=>updateRow("debit",idx,f,v)} />)}
-              <button onClick={()=>addRow("debit",{desc:"",value:"",category:""})} style={{ width:"100%",padding:"7px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.light,cursor:"pointer",fontSize:12,marginTop:4,fontFamily:"inherit" }}>+ Adicionar linha</button>
-            </Card>
+            <>
+              <Card title="💸 Gastos no Débito" accent={C.pink} total={totalDebit}>
+                <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Esses gastos impactam o saldo do mês atual. Use o ÷ para dividir com alguém.</div>
+                {month.debit.map((r,i) => <Row key={i} item={r} idx={i} canSplit onChange={(idx,f,v)=>updateRow("debit",idx,f,v)} />)}
+                <button onClick={()=>addRow("debit",{desc:"",value:"",category:""})} style={{ width:"100%",padding:"7px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.light,cursor:"pointer",fontSize:12,marginTop:4,fontFamily:"inherit" }}>+ Adicionar linha</button>
+              </Card>
+
+              <Card title="🍽️ Cartão Alimentação" accent={FOOD} total={totalFood}>
+                <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Gastos do vale alimentação — ficam separados do saldo do mês</div>
+                {month.food.map((r,i) => <Row key={i} item={r} idx={i} canSplit onChange={(idx,f,v)=>updateRow("food",idx,f,v)} />)}
+                <button onClick={()=>addRow("food",{desc:"",value:"",category:""})} style={{ width:"100%",padding:"7px",borderRadius:8,border:`1px dashed ${FOOD}55`,background:"none",color:FOOD,cursor:"pointer",fontSize:12,marginTop:4,fontFamily:"inherit" }}>+ Adicionar linha</button>
+              </Card>
+
+              {(splitDebit + splitFood) > 0 && (
+                <Card title="👥 Partes de Terceiros (débito e alimentação)" accent={C.pink2} total={splitDebit + splitFood}>
+                  {month.debit.map((r,i) => theirs(r) > 0 && (
+                    <SumRow key={`d${i}`} label={`💸 ${r.desc || `Item ${i+1}`} · ${r.splitWho || "Sem nome"}`} value={fmt(theirs(r))} sub />
+                  ))}
+                  {month.food.map((r,i) => theirs(r) > 0 && (
+                    <SumRow key={`f${i}`} label={`🍽️ ${r.desc || `Item ${i+1}`} · ${r.splitWho || "Sem nome"}`} value={fmt(theirs(r))} sub />
+                  ))}
+                </Card>
+              )}
+            </>
           )}
 
           {/* ── OUTRO CARTÃO ── */}
@@ -578,13 +687,24 @@ export default function App() {
               <Card title={`📊 Resumo — ${activeMonth}`} accent={C.pink}>
                 <label style={lbl}>💰 Renda Total</label>
                 <input style={{...inp,marginBottom:10}} type="number" value={month.income} onChange={e=>updateMonth(m=>{m.income=e.target.value})} placeholder="R$ 0,00" />
+
+                <label style={lbl}>🏦 Sobrou do mês passado</label>
+                <input style={{...inp,marginBottom:6}} type="number" value={month.carryover||""} onChange={e=>updateMonth(m=>{m.carryover=e.target.value})} placeholder="R$ 0,00" />
+                {MONTHS.indexOf(activeMonth) > 0 && (
+                  <button onClick={()=>updateMonth(m=>{m.carryover=prevSobraFinal.toFixed(2)})}
+                    style={{ background:"none", border:"none", color:C.pink, cursor:"pointer", fontSize:11, fontFamily:"inherit", textDecoration:"underline", padding:0, marginBottom:10 }}>
+                    ↩ Usar a sobra final de {prevMonth} ({fmt(prevSobraFinal)})
+                  </button>
+                )}
+
                 <label style={lbl}>💵 Dinheiro / Pix / Outros</label>
                 <input style={{...inp,marginBottom:14}} type="number" value={month.cash} onChange={e=>updateMonth(m=>{m.cash=e.target.value})} placeholder="R$ 0,00" />
 
                 <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12 }}>
                   <SumRow label="💰 Renda Total" value={fmt(income)} />
+                  <SumRow label="🏦 Sobrou do mês passado" value={fmt(carryover)} />
                   <div style={{ marginLeft:12 }}>
-                    <SumRow label="💸 Débito" value={fmt(totalDebit)} sub />
+                    <SumRow label="💸 Débito (minha parte)" value={fmt(totalDebit)} sub />
                     <SumRow label="💵 Dinheiro / Outros" value={fmt(cash)} sub />
                   </div>
                   <SumRow label="💵 Sobra antes da fatura" value={fmt(sobraAntesCredito)} color={sobraAntesCredito>=0?C.pink:"#f43f5e"} />
@@ -601,16 +721,23 @@ export default function App() {
               <Card title="💳 Fatura do Crédito (referência)" accent={C.pink2}>
                 <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Não entra no saldo — será pago mês que vem</div>
                 <SumRow label={`Minhas compras (${activeMonth})`} value={fmt(sumMy)} sub />
-                <SumRow label="A receber de terceiros" value={fmt(sumThird)} sub />
+                <SumRow label="A receber de terceiros" value={fmt(sumThirdCard)} sub />
                 <SumRow label="Total da fatura" value={fmt(totalFatura)} />
               </Card>
+
+              {totalFood > 0 && (
+                <Card title="🍽️ Cartão Alimentação" accent={FOOD}>
+                  <div style={{ color:C.light, fontSize:11, marginBottom:10 }}>Não entra no saldo do mês</div>
+                  <SumRow label={`Gasto no vale (${activeMonth})`} value={fmt(totalFood)} color={FOOD} />
+                </Card>
+              )}
 
               {Object.keys(thirdByPerson).length > 0 && (
                 <Card title="👥 Quanto Cada Um Me Deve" accent={C.pink2}>
                   {Object.entries(thirdByPerson).map(([who,val])=>(
                     <SumRow key={who} label={`👤 ${who}`} value={fmt(val)} sub />
                   ))}
-                  <SumRow label="Total a receber" value={fmt(sumThird)} />
+                  <SumRow label="Total a receber" value={fmt(receivable)} />
                 </Card>
               )}
 
