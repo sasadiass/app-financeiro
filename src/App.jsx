@@ -67,8 +67,21 @@ function initMonth() {
   };
 }
 
+function initYear() {
+  const y = {};
+  MONTHS.forEach(m => { y[m] = initMonth(); });
+  return y;
+}
+
 function initInstallment() {
-  return { id:"", desc:"", totalValue:"", totalInstallments:"", paidInstallments:"0", startMonth:"", startYear:"2026", target:"myCredit", who:"", category:"" };
+  return { id:"", desc:"", totalValue:"", totalInstallments:"", paidInstallments:"0", startMonth:"", startYear:String(new Date().getFullYear()), target:"myCredit", who:"", category:"" };
+}
+
+// Mês anterior (janeiro volta para dezembro do ano anterior)
+function prevOf(year, monthName) {
+  const idx = MONTHS.indexOf(monthName);
+  if (idx > 0) return { y: String(year), m: MONTHS[idx - 1] };
+  return { y: String(parseInt(year) - 1), m: "Dezembro" };
 }
 
 function loadData() {
@@ -76,15 +89,19 @@ function loadData() {
     const d = localStorage.getItem("finctrl2026v2");
     if (d) {
       const parsed = JSON.parse(d);
-      // Garante que meses salvos antes ganhem os novos campos (alimentação e sobra)
-      const months = {};
-      MONTHS.forEach(m => { months[m] = { ...initMonth(), ...((parsed.months || {})[m] || {}) }; });
-      return { ...parsed, months, installments: parsed.installments || [] };
+      // Dados antigos (sem anos) viram o ano de 2026
+      const src = parsed.years || { "2026": parsed.months || {} };
+      const years = {};
+      Object.keys(src).forEach(y => {
+        years[y] = {};
+        MONTHS.forEach(m => { years[y][m] = { ...initMonth(), ...((src[y] || {})[m] || {}) }; });
+      });
+      return { years, installments: parsed.installments || [] };
     }
   } catch {}
-  const months = {};
-  MONTHS.forEach(m => { months[m] = initMonth(); });
-  return { months, installments:[] };
+  const years = {};
+  years[String(new Date().getFullYear())] = initYear();
+  return { years, installments:[] };
 }
 
 function saveData(d) { try { localStorage.setItem("finctrl2026v2", JSON.stringify(d)); } catch {} }
@@ -188,12 +205,12 @@ function SumRow({ label, value, highlight, sub, color }) {
 function InstallmentModal({ onConfirm, onClose, editData }) {
   const [form, setForm] = useState(editData || initInstallment());
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
-  const monthIdx = MONTHS.indexOf(form.startMonth);
   const total = parseR(form.totalValue);
   const n = parseInt(form.totalInstallments)||1;
   const paid = parseInt(form.paidInstallments)||0;
   const per = total/n;
   const remaining = n - paid;
+  const yearOptions = ["2024","2025","2026","2027","2028","2029","2030"];
 
   function handleConfirm() {
     if (!form.desc || !form.totalValue || !form.startMonth) return;
@@ -238,7 +255,7 @@ function InstallmentModal({ onConfirm, onClose, editData }) {
           <div>
             <label style={lbl}>Ano de Início</label>
             <select style={inp} value={form.startYear} onChange={e=>set("startYear",e.target.value)}>
-              {["2024","2025","2026","2027"].map(y=><option key={y} value={y}>{y}</option>)}
+              {yearOptions.map(y=><option key={y} value={y}>{y}</option>)}
             </select>
           </div>
         </div>
@@ -339,7 +356,9 @@ function CategoryChart({ month }) {
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
+  const nowYear = String(new Date().getFullYear());
   const [data, setData] = useState(() => loadData());
+  const [activeYear, setActiveYear] = useState(nowYear);
   const [activeMonth, setActiveMonth] = useState(MONTHS[new Date().getMonth()]);
   const [tab, setTab] = useState("credit");
   const [showInstallModal, setShowInstallModal] = useState(false);
@@ -347,13 +366,27 @@ export default function App() {
 
   useEffect(() => { saveData(data); }, [data]);
 
-  const month = { ...initMonth(), ...(data.months[activeMonth] || {}) };
+  const getMonth = (y, m) => ({ ...initMonth(), ...(((data.years || {})[y] || {})[m] || {}) });
+  const month = getMonth(activeYear, activeMonth);
+
+  const yearList = Array.from(new Set([...Object.keys(data.years || {}), nowYear, activeYear])).sort();
+
+  function addYear() {
+    const nextYear = String(Math.max(...yearList.map(Number)) + 1);
+    setData(prev => {
+      const years = { ...prev.years };
+      if (!years[nextYear]) years[nextYear] = initYear();
+      return { ...prev, years };
+    });
+    setActiveYear(nextYear);
+  }
 
   function updateMonth(updater) {
     setData(prev => {
-      const base = { ...initMonth(), ...(prev.months[activeMonth] || {}) };
-      const next = { ...prev, months: { ...prev.months, [activeMonth]: JSON.parse(JSON.stringify(base)) } };
-      updater(next.months[activeMonth]);
+      const yr = (prev.years || {})[activeYear] || {};
+      const base = { ...initMonth(), ...(yr[activeMonth] || {}) };
+      const next = { ...prev, years: { ...prev.years, [activeYear]: { ...yr, [activeMonth]: JSON.parse(JSON.stringify(base)) } } };
+      updater(next.years[activeYear][activeMonth]);
       return next;
     });
   }
@@ -366,31 +399,35 @@ export default function App() {
     updateMonth(m => { m[section] = [...m[section], template]; });
   }
 
-  // Apply installment to months
+  // Apply installment to months (agora respeitando o ano de cada parcela)
   function applyInstallment(inst) {
     const startIdx = MONTHS.indexOf(inst.startMonth);
-    const startYear = parseInt(inst.startYear);
+    const startYear = parseInt(inst.startYear) || new Date().getFullYear();
     const n = parseInt(inst.totalInstallments)||1;
     const paid = parseInt(inst.paidInstallments)||0;
     const per = parseR(inst.totalValue) / n;
 
     setData(prev => {
-      const next = { ...prev, months: JSON.parse(JSON.stringify(prev.months)), installments: [...(prev.installments||[])] };
+      const next = { ...prev, years: JSON.parse(JSON.stringify(prev.years || {})), installments: [...(prev.installments||[])] };
 
-      // Remove old entries for this installment
-      MONTHS.forEach(mName => {
-        const m = next.months[mName];
-        if (!m) return;
-        ["myCredit","thirdCredit","debit"].forEach(sec => {
-          m[sec] = m[sec].filter(r => r.installmentId !== inst.id);
+      // Remove old entries for this installment (em todos os anos)
+      Object.keys(next.years).forEach(y => {
+        MONTHS.forEach(mName => {
+          const m = next.years[y][mName];
+          if (!m) return;
+          ["myCredit","thirdCredit","debit"].forEach(sec => {
+            m[sec] = m[sec].filter(r => r.installmentId !== inst.id);
+          });
         });
       });
 
       // Add new entries for remaining installments
       for (let i = paid; i < n; i++) {
         const absMonth = startIdx + i;
+        const y = String(startYear + Math.floor(absMonth / 12));
         const mName = MONTHS[absMonth % 12];
-        const m = next.months[mName];
+        if (!next.years[y]) next.years[y] = initYear();
+        const m = next.years[y][mName];
         if (!m) continue;
         const label = `${inst.desc} (${i+1}/${n})`;
         const entry = { desc:label, value:String(per.toFixed(2)), category:inst.category, installmentId:inst.id };
@@ -412,12 +449,14 @@ export default function App() {
 
   function deleteInstallment(id) {
     setData(prev => {
-      const next = { ...prev, months: JSON.parse(JSON.stringify(prev.months)), installments: prev.installments.filter(x=>x.id!==id) };
-      MONTHS.forEach(mName => {
-        const m = next.months[mName];
-        if (!m) return;
-        ["myCredit","thirdCredit","debit"].forEach(sec => {
-          m[sec] = m[sec].filter(r => r.installmentId !== id);
+      const next = { ...prev, years: JSON.parse(JSON.stringify(prev.years || {})), installments: prev.installments.filter(x=>x.id!==id) };
+      Object.keys(next.years).forEach(y => {
+        MONTHS.forEach(mName => {
+          const m = next.years[y][mName];
+          if (!m) return;
+          ["myCredit","thirdCredit","debit"].forEach(sec => {
+            m[sec] = m[sec].filter(r => r.installmentId !== id);
+          });
         });
       });
       return next;
@@ -441,15 +480,17 @@ export default function App() {
   const totalOut = totalDebit + cash;
   const sobraAntesCredito = income + carryover - totalOut;
 
-  // Fatura do mês anterior (crédito pago no mês seguinte)
-  const prevMonth = MONTHS[(MONTHS.indexOf(activeMonth) - 1 + 12) % 12];
-  const prevMonthData = { ...initMonth(), ...(data.months[prevMonth] || {}) };
+  // Fatura do mês anterior (crédito pago no mês seguinte) — janeiro puxa dezembro do ano anterior
+  const prev = prevOf(activeYear, activeMonth);
+  const prevMonth = prev.m;
+  const prevMonthData = getMonth(prev.y, prev.m);
   const prevSumMy = prevMonthData.myCredit.reduce((a,r)=>a+mine(r),0);
   const sobraFinal = sobraAntesCredito - prevSumMy;
+  const prevLabel = prev.y !== activeYear ? `${prevMonth} ${prev.y}` : prevMonth;
 
   // Sobra final do mês anterior (para preencher "Sobrou do mês passado")
-  const prevPrevMonth = MONTHS[(MONTHS.indexOf(prevMonth) - 1 + 12) % 12];
-  const prevPrevData = { ...initMonth(), ...(data.months[prevPrevMonth] || {}) };
+  const prevPrev = prevOf(prev.y, prev.m);
+  const prevPrevData = getMonth(prevPrev.y, prevPrev.m);
   const prevSobraFinal =
     parseR(prevMonthData.income) + parseR(prevMonthData.carryover)
     - (prevMonthData.debit.reduce((a,r)=>a+mine(r),0) + parseR(prevMonthData.cash))
@@ -486,7 +527,7 @@ export default function App() {
         <div style={{ maxWidth:720, margin:"0 auto" }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:10 }}>
             <div>
-              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#fff" }}>💰 Controle Financeiro 2026</div>
+              <div style={{ fontFamily:"'Playfair Display',serif", fontSize:22, fontWeight:700, color:"#fff" }}>💰 Controle Financeiro {activeYear}</div>
               <div style={{ color:"#fff0f5", fontSize:12, marginTop:2, opacity:0.85 }}>Gerencie seus gastos com carinho 🌸</div>
             </div>
             <button onClick={()=>{ setEditInstall(null); setShowInstallModal(true); }}
@@ -494,11 +535,30 @@ export default function App() {
               📦 + Parcelar
             </button>
           </div>
+
+          {/* Anos */}
           <div style={{ display:"flex", gap:4, marginTop:14, overflowX:"auto", paddingBottom:2 }}>
+            {yearList.map(y => {
+              const isActive = y === activeYear;
+              return (
+                <button key={y} onClick={()=>setActiveYear(y)}
+                  style={{ flexShrink:0, padding:"4px 12px", borderRadius:20, border:isActive?"none":"1px solid rgba(255,255,255,0.5)", background:isActive?"#fff":"rgba(255,255,255,0.25)", color:isActive?C.pink:"rgba(255,255,255,0.9)", fontSize:12, cursor:"pointer", fontWeight:isActive?700:500, fontFamily:"inherit" }}>
+                  {y}
+                </button>
+              );
+            })}
+            <button onClick={addYear} title="Adicionar próximo ano"
+              style={{ flexShrink:0, padding:"4px 12px", borderRadius:20, border:"1px dashed rgba(255,255,255,0.7)", background:"none", color:"#fff", fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+              + ano
+            </button>
+          </div>
+
+          {/* Meses */}
+          <div style={{ display:"flex", gap:4, marginTop:8, overflowX:"auto", paddingBottom:2 }}>
             {MONTHS.map(m => {
               const isActive = m === activeMonth;
-              const isNow = MONTHS.indexOf(m) === new Date().getMonth();
-              const md = { ...initMonth(), ...(data.months[m] || {}) };
+              const isNow = MONTHS.indexOf(m) === new Date().getMonth() && activeYear === nowYear;
+              const md = getMonth(activeYear, m);
               const hasData = md.myCredit.some(r=>r.value) || md.debit.some(r=>r.value) || md.food.some(r=>r.value) || md.income;
               return (
                 <button key={m} onClick={()=>setActiveMonth(m)}
@@ -684,18 +744,16 @@ export default function App() {
           {/* ── RESUMO ── */}
           {tab==="summary" && (
             <>
-              <Card title={`📊 Resumo — ${activeMonth}`} accent={C.pink}>
+              <Card title={`📊 Resumo — ${activeMonth} ${activeYear}`} accent={C.pink}>
                 <label style={lbl}>💰 Renda Total</label>
                 <input style={{...inp,marginBottom:10}} type="number" value={month.income} onChange={e=>updateMonth(m=>{m.income=e.target.value})} placeholder="R$ 0,00" />
 
                 <label style={lbl}>🏦 Sobrou do mês passado</label>
                 <input style={{...inp,marginBottom:6}} type="number" value={month.carryover||""} onChange={e=>updateMonth(m=>{m.carryover=e.target.value})} placeholder="R$ 0,00" />
-                {MONTHS.indexOf(activeMonth) > 0 && (
-                  <button onClick={()=>updateMonth(m=>{m.carryover=prevSobraFinal.toFixed(2)})}
-                    style={{ background:"none", border:"none", color:C.pink, cursor:"pointer", fontSize:11, fontFamily:"inherit", textDecoration:"underline", padding:0, marginBottom:10 }}>
-                    ↩ Usar a sobra final de {prevMonth} ({fmt(prevSobraFinal)})
-                  </button>
-                )}
+                <button onClick={()=>updateMonth(m=>{m.carryover=prevSobraFinal.toFixed(2)})}
+                  style={{ background:"none", border:"none", color:C.pink, cursor:"pointer", fontSize:11, fontFamily:"inherit", textDecoration:"underline", padding:0, marginBottom:10 }}>
+                  ↩ Usar a sobra final de {prevLabel} ({fmt(prevSobraFinal)})
+                </button>
 
                 <label style={lbl}>💵 Dinheiro / Pix / Outros</label>
                 <input style={{...inp,marginBottom:14}} type="number" value={month.cash} onChange={e=>updateMonth(m=>{m.cash=e.target.value})} placeholder="R$ 0,00" />
@@ -709,7 +767,7 @@ export default function App() {
                   </div>
                   <SumRow label="💵 Sobra antes da fatura" value={fmt(sobraAntesCredito)} color={sobraAntesCredito>=0?C.pink:"#f43f5e"} />
                   <div style={{ marginLeft:12 }}>
-                    <SumRow label={`💳 Fatura de ${prevMonth} (paga agora)`} value={fmt(prevSumMy)} sub />
+                    <SumRow label={`💳 Fatura de ${prevLabel} (paga agora)`} value={fmt(prevSumMy)} sub />
                   </div>
                   <div style={{ borderTop:`1px solid ${C.border}`, marginTop:8, paddingTop:8 }}>
                     <SumRow label="✅ SOBRA FINAL DO MÊS" value={fmt(sobraFinal)} highlight />
@@ -753,14 +811,14 @@ export default function App() {
 
           {/* ── GRÁFICO ── */}
           {tab==="chart" && (
-            <Card title={`📈 Gastos por Categoria — ${activeMonth}`} accent={C.pink}>
+            <Card title={`📈 Gastos por Categoria — ${activeMonth} ${activeYear}`} accent={C.pink}>
               <CategoryChart month={month} />
             </Card>
           )}
 
           {/* ── NOTAS ── */}
           {tab==="notes" && (
-            <Card title={`📝 Bloco de Notas — ${activeMonth}`} accent={C.pink2}>
+            <Card title={`📝 Bloco de Notas — ${activeMonth} ${activeYear}`} accent={C.pink2}>
               <textarea value={month.notes||""} onChange={e=>updateMonth(m=>{m.notes=e.target.value})}
                 placeholder={`Anotações de ${activeMonth}... 🌸`}
                 style={{ ...inp, minHeight:300, resize:"vertical", lineHeight:1.7, fontSize:14, padding:"14px" }} />
